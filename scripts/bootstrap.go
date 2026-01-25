@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/pesio-ai/be-identity-service/pkg/password"
+	"github.com/pesio-ai/be-plt-identity/pkg/password"
 )
 
 // Bootstrap creates test data for development and testing

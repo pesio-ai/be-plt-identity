@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/pesio-ai/be-lib-common/logger"
-	"github.com/pesio-ai/be-identity-service/internal/repository"
-	jwtpkg "github.com/pesio-ai/be-identity-service/pkg/jwt"
-	"github.com/pesio-ai/be-identity-service/pkg/password"
+	"github.com/pesio-ai/be-plt-identity/internal/repository"
+	jwtpkg "github.com/pesio-ai/be-plt-identity/pkg/jwt"
+	"github.com/pesio-ai/be-plt-identity/pkg/password"
 )
 
 var (

@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/pesio-ai/be-lib-common/logger"
-	"github.com/pesio-ai/be-identity-service/internal/repository"
+	"github.com/pesio-ai/be-plt-identity/internal/repository"
 )
 
 type RoleService struct {
