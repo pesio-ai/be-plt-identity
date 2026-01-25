@@ -29,5 +29,5 @@ require (
 
 replace (
 	github.com/pesio-ai/be-go-proto => ../be-go-proto
-	github.com/pesio-ai/be-lib-common => ../be-go-common
+	github.com/pesio-ai/be-lib-common => ../be-lib-common
 )
