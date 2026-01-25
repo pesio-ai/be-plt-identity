@@ -32,7 +32,8 @@ func main() {
 	grpcPort := getEnv("GRPC_PORT", "9081")
 	
 	// JWT configuration
-	accessTokenDuration := 15 * time.Minute
+	// TODO: In production, use shorter duration (15 * time.Minute) and implement token refresh
+	accessTokenDuration := 24 * time.Hour // Extended for development
 	refreshTokenDuration := 30 * 24 * time.Hour
 	
 	// For MVP, generate keys on startup (in production, load from secure storage)
