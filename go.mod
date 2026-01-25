@@ -1,4 +1,4 @@
-module github.com/pesio-ai/be-identity-service
+module github.com/pesio-ai/be-plt-identity
 
 go 1.25.0
 
