@@ -82,21 +82,43 @@ func (r *UserRepository) GetByID(ctx context.Context, id, entityID string) (*Use
 	return user, nil
 }
 
-// GetByEmail retrieves a user by email and entity domain
+// GetByEmail retrieves a user by email and optionally entity domain
+// If entityID is empty, returns the first active user with that email
 func (r *UserRepository) GetByEmail(ctx context.Context, email, entityID string) (*User, error) {
 	user := &User{}
 
-	query := `
-		SELECT id, entity_id, email, email_verified, password_hash,
-			   first_name, last_name, phone, profile_photo_url,
-			   timezone, locale, status, user_type,
-			   last_login_at, failed_login_attempts, locked_until,
-			   created_at, updated_at, created_by, updated_by
-		FROM users
-		WHERE email = $1 AND entity_id = $2
-	`
+	var query string
+	var args []interface{}
 
-	err := r.db.QueryRow(ctx, query, email, entityID).Scan(
+	if entityID != "" {
+		// Lookup by email AND entity
+		query = `
+			SELECT id, entity_id, email, email_verified, password_hash,
+				   first_name, last_name, phone, profile_photo_url,
+				   timezone, locale, status, user_type,
+				   last_login_at, failed_login_attempts, locked_until,
+				   created_at, updated_at, created_by, updated_by
+			FROM users
+			WHERE email = $1 AND entity_id = $2
+		`
+		args = []interface{}{email, entityID}
+	} else {
+		// Lookup by email only - return first active user
+		query = `
+			SELECT id, entity_id, email, email_verified, password_hash,
+				   first_name, last_name, phone, profile_photo_url,
+				   timezone, locale, status, user_type,
+				   last_login_at, failed_login_attempts, locked_until,
+				   created_at, updated_at, created_by, updated_by
+			FROM users
+			WHERE email = $1 AND status = 'active'
+			ORDER BY created_at ASC
+			LIMIT 1
+		`
+		args = []interface{}{email}
+	}
+
+	err := r.db.QueryRow(ctx, query, args...).Scan(
 		&user.ID, &user.EntityID, &user.Email, &user.EmailVerified, &user.PasswordHash,
 		&user.FirstName, &user.LastName, &user.Phone, &user.ProfilePhotoURL,
 		&user.Timezone, &user.Locale, &user.Status, &user.UserType,
