@@ -4,195 +4,119 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/pesio-ai/be-go-common/config"
-	"github.com/pesio-ai/be-go-common/database"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pesio-ai/be-go-common/logger"
-	"github.com/pesio-ai/be-go-common/middleware"
-	"github.com/pesio-ai/be-go-common/nats"
-	"github.com/pesio-ai/be-go-common/redis"
+	pb "github.com/pesio-ai/be-go-proto/gen/go/platform"
 	"github.com/pesio-ai/be-identity-service/internal/handler"
 	"github.com/pesio-ai/be-identity-service/internal/repository"
 	"github.com/pesio-ai/be-identity-service/internal/service"
-	pb "github.com/pesio-ai/be-go-proto/gen/go/platform/proto/platform"
+	jwtpkg "github.com/pesio-ai/be-identity-service/pkg/jwt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
 func main() {
-	// Load configuration
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
-		os.Exit(1)
-	}
-
 	// Initialize logger
 	log := logger.New(logger.Config{
 		Level:       os.Getenv("LOG_LEVEL"),
-		Environment: cfg.Service.Environment,
-		ServiceName: cfg.Service.Name,
-		Version:     cfg.Service.Version,
+		ServiceName: "identity-service",
 	})
 
-	log.Info().
-		Str("service", cfg.Service.Name).
-		Str("version", cfg.Service.Version).
-		Str("environment", cfg.Service.Environment).
-		Msg("Starting Identity Service")
+	// Get configuration from environment
+	dbURL := getEnv("DATABASE_URL", "postgres://pesio:dev_password_change_me@localhost:5432/plt_identity_db?sslmode=disable")
+	grpcPort := getEnv("GRPC_PORT", "9081")
+	
+	// JWT configuration
+	accessTokenDuration := 15 * time.Minute
+	refreshTokenDuration := 30 * 24 * time.Hour
+	
+	// For MVP, generate keys on startup (in production, load from secure storage)
+	privateKeyPEM := getEnv("JWT_PRIVATE_KEY", "")
+	publicKeyPEM := getEnv("JWT_PUBLIC_KEY", "")
+	
+	if privateKeyPEM == "" || publicKeyPEM == "" {
+		log.Info().Msg("Generating JWT key pair (development mode)")
+		var err error
+		privateKeyPEM, publicKeyPEM, err = jwtpkg.GenerateKeyPair()
+		if err != nil {
+			log.Fatal().Err(err).Msg("Failed to generate JWT key pair")
+		}
+		log.Info().Msg("JWT key pair generated successfully")
+	}
 
-	// Create context
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Initialize database
-	db, err := database.New(ctx, database.Config{
-		Host:        cfg.Database.Host,
-		Port:        cfg.Database.Port,
-		User:        cfg.Database.User,
-		Password:    cfg.Database.Password,
-		Database:    cfg.Database.Database,
-		SSLMode:     cfg.Database.SSLMode,
-		MaxConns:    cfg.Database.MaxConns,
-		MinConns:    cfg.Database.MinConns,
-		MaxConnTime: cfg.Database.MaxConnTime,
-		MaxIdleTime: cfg.Database.MaxIdleTime,
-		HealthCheck: cfg.Database.HealthCheck,
-	})
+	// Initialize database connection
+	log.Info().Str("database", dbURL).Msg("Connecting to database")
+	dbPool, err := pgxpool.New(context.Background(), dbURL)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to connect to database")
 	}
-	defer db.Close()
+	defer dbPool.Close()
+
+	// Test database connection
+	if err := dbPool.Ping(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to ping database")
+	}
 	log.Info().Msg("Database connection established")
 
-	// Initialize Redis
-	redisClient, err := redis.New(redis.Config{
-		Host:         cfg.Redis.Host,
-		Port:         cfg.Redis.Port,
-		Password:     cfg.Redis.Password,
-		DB:           cfg.Redis.DB,
-		MaxRetries:   cfg.Redis.MaxRetries,
-		PoolSize:     cfg.Redis.PoolSize,
-		MinIdleConns: cfg.Redis.MinIdleConns,
-		DialTimeout:  cfg.Redis.DialTimeout,
-		ReadTimeout:  cfg.Redis.ReadTimeout,
-		WriteTimeout: cfg.Redis.WriteTimeout,
-	})
+	// Initialize JWT manager
+	jwtManager, err := jwtpkg.NewManager(privateKeyPEM, publicKeyPEM, accessTokenDuration, refreshTokenDuration)
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to connect to Redis")
-	}
-	defer redisClient.Close()
-	log.Info().Msg("Redis connection established")
-
-	// Initialize NATS (optional - for event publishing)
-	var natsClient *nats.Client
-	if cfg.NATS.URL != "" {
-		natsClient, err = nats.New(nats.Config{
-			URL:           cfg.NATS.URL,
-			MaxReconnects: cfg.NATS.MaxReconnects,
-			ReconnectWait: cfg.NATS.ReconnectWait,
-			Token:         cfg.NATS.Token,
-			StreamName:    "IDENTITY_EVENTS",
-		})
-		if err != nil {
-			log.Warn().Err(err).Msg("Failed to connect to NATS (continuing without event publishing)")
-		} else {
-			defer natsClient.Close()
-			log.Info().Msg("NATS connection established")
-		}
+		log.Fatal().Err(err).Msg("Failed to create JWT manager")
 	}
 
 	// Initialize repositories
-	userRepo := repository.NewUserRepository(db)
-	roleRepo := repository.NewRoleRepository(db)
-	tokenRepo := repository.NewTokenRepository(db)
+	userRepo := repository.NewUserRepository(dbPool, log)
+	roleRepo := repository.NewRoleRepository(dbPool, log)
+	sessionRepo := repository.NewSessionRepository(dbPool, log)
 
 	// Initialize services
-	identityService := service.NewIdentityService(
-		userRepo,
-		roleRepo,
-		tokenRepo,
-		redisClient,
-		log,
-	)
+	authService := service.NewAuthService(userRepo, roleRepo, sessionRepo, jwtManager, log)
+	userService := service.NewUserService(userRepo, roleRepo, log)
+	roleService := service.NewRoleService(roleRepo, log)
 
-	// Start gRPC server
+	// Initialize handler
+	grpcHandler := handler.NewGRPCHandler(authService, userService, roleService, log)
+
+	// Setup gRPC server
 	grpcServer := grpc.NewServer()
-	pb.RegisterIdentityServiceServer(grpcServer, handler.NewGRPCHandler(identityService, log))
+	pb.RegisterIdentityServiceServer(grpcServer, grpcHandler)
 	reflection.Register(grpcServer)
 
-	grpcLis, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.Server.GRPCPort))
+	// Create gRPC listener
+	grpcListener, err := net.Listen("tcp", fmt.Sprintf(":%s", grpcPort))
 	if err != nil {
-		log.Fatal().Err(err).Msg("Failed to listen for gRPC")
+		log.Fatal().Err(err).Str("port", grpcPort).Msg("Failed to create gRPC listener")
 	}
 
+	// Start gRPC server
 	go func() {
-		log.Info().Int("port", cfg.Server.GRPCPort).Msg("Starting gRPC server")
-		if err := grpcServer.Serve(grpcLis); err != nil {
+		log.Info().Str("port", grpcPort).Msg("Starting gRPC server")
+		if err := grpcServer.Serve(grpcListener); err != nil {
 			log.Error().Err(err).Msg("gRPC server failed")
 		}
 	}()
 
-	// Start HTTP server
-	httpHandler := handler.NewHTTPHandler(identityService, log)
-	mux := http.NewServeMux()
+	// Wait for interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	<-sigChan
 
-	// Health check
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"healthy"}`))
-	})
+	log.Info().Msg("Shutting down gracefully...")
 
-	// API routes
-	mux.HandleFunc("/api/v1/auth/login", httpHandler.Login)
-	mux.HandleFunc("/api/v1/auth/logout", httpHandler.Logout)
-	mux.HandleFunc("/api/v1/auth/refresh", httpHandler.RefreshToken)
-	mux.HandleFunc("/api/v1/users", httpHandler.ListUsers)
-	mux.HandleFunc("/api/v1/users/create", httpHandler.CreateUser)
-
-	// Apply middleware
-	var h http.Handler = mux
-	h = middleware.RequestID(h)
-	h = middleware.Logger(&log.Logger)(h)
-	h = middleware.Recovery(&log.Logger)(h)
-	h = middleware.CORS([]string{"*"})(h)
-	h = middleware.Timeout(30 * time.Second)(h)
-
-	httpServer := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      h,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-		IdleTimeout:  cfg.Server.IdleTimeout,
-	}
-
-	go func() {
-		log.Info().Int("port", cfg.Server.Port).Msg("Starting HTTP server")
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error().Err(err).Msg("HTTP server failed")
-		}
-	}()
-
-	// Graceful shutdown
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	log.Info().Msg("Shutting down servers...")
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
-	defer shutdownCancel()
-
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Error().Err(err).Msg("HTTP server shutdown failed")
-	}
-
+	// Shutdown gRPC server
 	grpcServer.GracefulStop()
 
-	log.Info().Msg("Servers stopped")
+	log.Info().Msg("Server stopped")
+}
+
+func getEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }

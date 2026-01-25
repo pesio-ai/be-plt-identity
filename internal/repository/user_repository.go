@@ -3,380 +3,240 @@ package repository
 import (
 	"context"
 	"fmt"
+	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/pesio-ai/be-go-common/database"
-	"github.com/pesio-ai/be-go-common/errors"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pesio-ai/be-go-common/logger"
 )
 
-// User represents a user entity
-type User struct {
-	ID           string
-	Email        string
-	PasswordHash string
-	FirstName    string
-	LastName     string
-	Status       string
-	LastLoginAt  *string
-	EntityIDs    []string
-	RoleIDs      []string
-	CreatedBy    *string
-	CreatedAt    string
-	UpdatedBy    *string
-	UpdatedAt    string
-}
-
-// UserRepository handles user data operations
 type UserRepository struct {
-	db *database.DB
+	db  *pgxpool.Pool
+	log *logger.Logger
 }
 
-// NewUserRepository creates a new user repository
-func NewUserRepository(db *database.DB) *UserRepository {
-	return &UserRepository{db: db}
+func NewUserRepository(db *pgxpool.Pool, log *logger.Logger) *UserRepository {
+	return &UserRepository{
+		db:  db,
+		log: log,
+	}
 }
 
 // Create creates a new user
 func (r *UserRepository) Create(ctx context.Context, user *User) error {
+	user.ID = uuid.New().String()
+	user.CreatedAt = time.Now()
+	user.UpdatedAt = time.Now()
+
 	query := `
-		INSERT INTO users (email, password_hash, first_name, last_name, status, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, created_at, updated_at
+		INSERT INTO users (
+			id, entity_id, email, email_verified, password_hash,
+			first_name, last_name, phone, profile_photo_url,
+			timezone, locale, status, user_type,
+			created_at, updated_at, created_by
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+		)
 	`
 
-	err := r.db.QueryRow(ctx, query,
-		user.Email,
-		user.PasswordHash,
-		user.FirstName,
-		user.LastName,
-		user.Status,
-		user.CreatedBy,
-	).Scan(&user.ID, &user.CreatedAt, &user.UpdatedAt)
+	_, err := r.db.Exec(ctx, query,
+		user.ID, user.EntityID, user.Email, user.EmailVerified, user.PasswordHash,
+		user.FirstName, user.LastName, user.Phone, user.ProfilePhotoURL,
+		user.Timezone, user.Locale, user.Status, user.UserType,
+		user.CreatedAt, user.UpdatedAt, user.CreatedBy,
+	)
 
 	if err != nil {
-		return errors.Wrap(err, errors.ErrCodeInternal, "failed to create user")
+		return fmt.Errorf("failed to create user: %w", err)
 	}
 
 	return nil
 }
 
 // GetByID retrieves a user by ID
-func (r *UserRepository) GetByID(ctx context.Context, id string) (*User, error) {
+func (r *UserRepository) GetByID(ctx context.Context, id, entityID string) (*User, error) {
 	user := &User{}
 
 	query := `
-		SELECT id, email, password_hash, first_name, last_name, status,
-		       last_login_at, created_by, created_at, updated_by, updated_at
+		SELECT id, entity_id, email, email_verified, password_hash,
+			   first_name, last_name, phone, profile_photo_url,
+			   timezone, locale, status, user_type,
+			   last_login_at, failed_login_attempts, locked_until,
+			   created_at, updated_at, created_by, updated_by
 		FROM users
-		WHERE id = $1
+		WHERE id = $1 AND entity_id = $2
 	`
 
-	err := r.db.QueryRow(ctx, query, id).Scan(
-		&user.ID,
-		&user.Email,
-		&user.PasswordHash,
-		&user.FirstName,
-		&user.LastName,
-		&user.Status,
-		&user.LastLoginAt,
-		&user.CreatedBy,
-		&user.CreatedAt,
-		&user.UpdatedBy,
-		&user.UpdatedAt,
+	err := r.db.QueryRow(ctx, query, id, entityID).Scan(
+		&user.ID, &user.EntityID, &user.Email, &user.EmailVerified, &user.PasswordHash,
+		&user.FirstName, &user.LastName, &user.Phone, &user.ProfilePhotoURL,
+		&user.Timezone, &user.Locale, &user.Status, &user.UserType,
+		&user.LastLoginAt, &user.FailedLoginAttempts, &user.LockedUntil,
+		&user.CreatedAt, &user.UpdatedAt, &user.CreatedBy, &user.UpdatedBy,
 	)
 
-	if err == pgx.ErrNoRows {
-		return nil, errors.NotFound("user", id)
-	}
 	if err != nil {
-		return nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to get user")
-	}
-
-	// Load entity IDs
-	user.EntityIDs, err = r.getUserEntities(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-
-	// Load role IDs
-	user.RoleIDs, err = r.getUserRoles(ctx, id)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 
 	return user, nil
 }
 
-// GetByEmail retrieves a user by email
-func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*User, error) {
+// GetByEmail retrieves a user by email and entity domain
+func (r *UserRepository) GetByEmail(ctx context.Context, email, entityID string) (*User, error) {
 	user := &User{}
 
 	query := `
-		SELECT id, email, password_hash, first_name, last_name, status,
-		       last_login_at, created_by, created_at, updated_by, updated_at
+		SELECT id, entity_id, email, email_verified, password_hash,
+			   first_name, last_name, phone, profile_photo_url,
+			   timezone, locale, status, user_type,
+			   last_login_at, failed_login_attempts, locked_until,
+			   created_at, updated_at, created_by, updated_by
 		FROM users
-		WHERE email = $1
+		WHERE email = $1 AND entity_id = $2
 	`
 
-	err := r.db.QueryRow(ctx, query, email).Scan(
-		&user.ID,
-		&user.Email,
-		&user.PasswordHash,
-		&user.FirstName,
-		&user.LastName,
-		&user.Status,
-		&user.LastLoginAt,
-		&user.CreatedBy,
-		&user.CreatedAt,
-		&user.UpdatedBy,
-		&user.UpdatedAt,
+	err := r.db.QueryRow(ctx, query, email, entityID).Scan(
+		&user.ID, &user.EntityID, &user.Email, &user.EmailVerified, &user.PasswordHash,
+		&user.FirstName, &user.LastName, &user.Phone, &user.ProfilePhotoURL,
+		&user.Timezone, &user.Locale, &user.Status, &user.UserType,
+		&user.LastLoginAt, &user.FailedLoginAttempts, &user.LockedUntil,
+		&user.CreatedAt, &user.UpdatedAt, &user.CreatedBy, &user.UpdatedBy,
 	)
 
-	if err == pgx.ErrNoRows {
-		return nil, errors.NotFound("user", email)
-	}
 	if err != nil {
-		return nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to get user by email")
-	}
-
-	// Load entity IDs
-	user.EntityIDs, err = r.getUserEntities(ctx, user.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Load role IDs
-	user.RoleIDs, err = r.getUserRoles(ctx, user.ID)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get user by email: %w", err)
 	}
 
 	return user, nil
 }
 
-// Update updates a user
+// Update updates user information
 func (r *UserRepository) Update(ctx context.Context, user *User) error {
+	user.UpdatedAt = time.Now()
+
 	query := `
-		UPDATE users
-		SET email = $2, first_name = $3, last_name = $4, status = $5, updated_by = $6, updated_at = NOW()
-		WHERE id = $1
-		RETURNING updated_at
+		UPDATE users SET
+			first_name = $1, last_name = $2, phone = $3,
+			profile_photo_url = $4, timezone = $5, locale = $6,
+			status = $7, updated_at = $8, updated_by = $9
+		WHERE id = $10 AND entity_id = $11
 	`
 
-	err := r.db.QueryRow(ctx, query,
-		user.ID,
-		user.Email,
-		user.FirstName,
-		user.LastName,
-		user.Status,
-		user.UpdatedBy,
-	).Scan(&user.UpdatedAt)
+	result, err := r.db.Exec(ctx, query,
+		user.FirstName, user.LastName, user.Phone,
+		user.ProfilePhotoURL, user.Timezone, user.Locale,
+		user.Status, user.UpdatedAt, user.UpdatedBy,
+		user.ID, user.EntityID,
+	)
 
-	if err == pgx.ErrNoRows {
-		return errors.NotFound("user", user.ID)
-	}
 	if err != nil {
-		return errors.Wrap(err, errors.ErrCodeInternal, "failed to update user")
+		return fmt.Errorf("failed to update user: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("user not found")
 	}
 
 	return nil
 }
 
-// Delete deletes a user
-func (r *UserRepository) Delete(ctx context.Context, id string) error {
-	query := `DELETE FROM users WHERE id = $1`
+// UpdatePassword updates the user's password hash
+func (r *UserRepository) UpdatePassword(ctx context.Context, userID, entityID, passwordHash string) error {
+	query := `
+		UPDATE users SET
+			password_hash = $1,
+			updated_at = $2
+		WHERE id = $3 AND entity_id = $4
+	`
 
-	tag, err := r.db.Exec(ctx, query, id)
+	result, err := r.db.Exec(ctx, query, passwordHash, time.Now(), userID, entityID)
 	if err != nil {
-		return errors.Wrap(err, errors.ErrCodeInternal, "failed to delete user")
+		return fmt.Errorf("failed to update password: %w", err)
 	}
 
-	if tag.RowsAffected() == 0 {
-		return errors.NotFound("user", id)
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("user not found")
 	}
 
 	return nil
-}
-
-// List retrieves users with pagination
-func (r *UserRepository) List(ctx context.Context, entityID string, status string, limit, offset int) ([]*User, int64, error) {
-	// Build query
-	query := `
-		SELECT DISTINCT u.id, u.email, u.first_name, u.last_name, u.status,
-		       u.last_login_at, u.created_by, u.created_at, u.updated_by, u.updated_at
-		FROM users u
-	`
-
-	countQuery := `SELECT COUNT(DISTINCT u.id) FROM users u`
-
-	args := []interface{}{}
-	argCount := 1
-
-	if entityID != "" {
-		query += ` INNER JOIN user_entities ue ON u.id = ue.user_id`
-		countQuery += ` INNER JOIN user_entities ue ON u.id = ue.user_id`
-		query += fmt.Sprintf(` WHERE ue.entity_id = $%d`, argCount)
-		countQuery += fmt.Sprintf(` WHERE ue.entity_id = $%d`, argCount)
-		args = append(args, entityID)
-		argCount++
-
-		if status != "" {
-			query += fmt.Sprintf(` AND u.status = $%d`, argCount)
-			countQuery += fmt.Sprintf(` AND u.status = $%d`, argCount)
-			args = append(args, status)
-			argCount++
-		}
-	} else if status != "" {
-		query += fmt.Sprintf(` WHERE u.status = $%d`, argCount)
-		countQuery += fmt.Sprintf(` WHERE u.status = $%d`, argCount)
-		args = append(args, status)
-		argCount++
-	}
-
-	query += ` ORDER BY u.created_at DESC`
-	query += fmt.Sprintf(` LIMIT $%d OFFSET $%d`, argCount, argCount+1)
-	args = append(args, limit, offset)
-
-	// Get total count
-	var total int64
-	err := r.db.QueryRow(ctx, countQuery, args[:argCount-1]...).Scan(&total)
-	if err != nil {
-		return nil, 0, errors.Wrap(err, errors.ErrCodeInternal, "failed to count users")
-	}
-
-	// Get users
-	rows, err := r.db.Query(ctx, query, args...)
-	if err != nil {
-		return nil, 0, errors.Wrap(err, errors.ErrCodeInternal, "failed to list users")
-	}
-	defer rows.Close()
-
-	users := make([]*User, 0)
-	for rows.Next() {
-		user := &User{}
-		err := rows.Scan(
-			&user.ID,
-			&user.Email,
-			&user.FirstName,
-			&user.LastName,
-			&user.Status,
-			&user.LastLoginAt,
-			&user.CreatedBy,
-			&user.CreatedAt,
-			&user.UpdatedBy,
-			&user.UpdatedAt,
-		)
-		if err != nil {
-			return nil, 0, errors.Wrap(err, errors.ErrCodeInternal, "failed to scan user")
-		}
-
-		// Load entity IDs
-		user.EntityIDs, _ = r.getUserEntities(ctx, user.ID)
-		// Load role IDs
-		user.RoleIDs, _ = r.getUserRoles(ctx, user.ID)
-
-		users = append(users, user)
-	}
-
-	return users, total, nil
 }
 
 // UpdateLastLogin updates the last login timestamp
-func (r *UserRepository) UpdateLastLogin(ctx context.Context, id string) error {
-	query := `UPDATE users SET last_login_at = NOW() WHERE id = $1`
+func (r *UserRepository) UpdateLastLogin(ctx context.Context, userID, entityID string) error {
+	now := time.Now()
 
-	_, err := r.db.Exec(ctx, query, id)
-	if err != nil {
-		return errors.Wrap(err, errors.ErrCodeInternal, "failed to update last login")
-	}
-
-	return nil
-}
-
-// AssignRole assigns a role to a user
-func (r *UserRepository) AssignRole(ctx context.Context, userID, roleID, createdBy string) error {
 	query := `
-		INSERT INTO user_roles (user_id, role_id, created_by)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (user_id, role_id) DO NOTHING
+		UPDATE users SET
+			last_login_at = $1,
+			failed_login_attempts = 0,
+			locked_until = NULL,
+			updated_at = $2
+		WHERE id = $3 AND entity_id = $4
 	`
 
-	_, err := r.db.Exec(ctx, query, userID, roleID, createdBy)
+	_, err := r.db.Exec(ctx, query, now, now, userID, entityID)
 	if err != nil {
-		return errors.Wrap(err, errors.ErrCodeInternal, "failed to assign role")
+		return fmt.Errorf("failed to update last login: %w", err)
 	}
 
 	return nil
 }
 
-// RevokeRole revokes a role from a user
-func (r *UserRepository) RevokeRole(ctx context.Context, userID, roleID string) error {
-	query := `DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2`
-
-	_, err := r.db.Exec(ctx, query, userID, roleID)
-	if err != nil {
-		return errors.Wrap(err, errors.ErrCodeInternal, "failed to revoke role")
-	}
-
-	return nil
-}
-
-// AssignEntity assigns an entity to a user
-func (r *UserRepository) AssignEntity(ctx context.Context, userID, entityID, createdBy string) error {
+// IncrementFailedLoginAttempts increments failed login counter
+func (r *UserRepository) IncrementFailedLoginAttempts(ctx context.Context, userID, entityID string) error {
 	query := `
-		INSERT INTO user_entities (user_id, entity_id, created_by)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (user_id, entity_id) DO NOTHING
+		UPDATE users SET
+			failed_login_attempts = failed_login_attempts + 1,
+			updated_at = $1
+		WHERE id = $2 AND entity_id = $3
 	`
 
-	_, err := r.db.Exec(ctx, query, userID, entityID, createdBy)
+	_, err := r.db.Exec(ctx, query, time.Now(), userID, entityID)
 	if err != nil {
-		return errors.Wrap(err, errors.ErrCodeInternal, "failed to assign entity")
+		return fmt.Errorf("failed to increment failed login attempts: %w", err)
 	}
 
 	return nil
 }
 
-// getUserEntities retrieves entity IDs for a user
-func (r *UserRepository) getUserEntities(ctx context.Context, userID string) ([]string, error) {
-	query := `SELECT entity_id FROM user_entities WHERE user_id = $1`
+// LockAccount locks a user account
+func (r *UserRepository) LockAccount(ctx context.Context, userID, entityID string, duration time.Duration) error {
+	lockUntil := time.Now().Add(duration)
 
-	rows, err := r.db.Query(ctx, query, userID)
+	query := `
+		UPDATE users SET
+			locked_until = $1,
+			updated_at = $2
+		WHERE id = $3 AND entity_id = $4
+	`
+
+	_, err := r.db.Exec(ctx, query, lockUntil, time.Now(), userID, entityID)
 	if err != nil {
-		return nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to get user entities")
-	}
-	defer rows.Close()
-
-	entityIDs := make([]string, 0)
-	for rows.Next() {
-		var entityID string
-		if err := rows.Scan(&entityID); err != nil {
-			return nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to scan entity ID")
-		}
-		entityIDs = append(entityIDs, entityID)
+		return fmt.Errorf("failed to lock account: %w", err)
 	}
 
-	return entityIDs, nil
+	return nil
 }
 
-// getUserRoles retrieves role IDs for a user
-func (r *UserRepository) getUserRoles(ctx context.Context, userID string) ([]string, error) {
-	query := `SELECT role_id FROM user_roles WHERE user_id = $1`
+// Deactivate deactivates a user account
+func (r *UserRepository) Deactivate(ctx context.Context, userID, entityID, deactivatedBy string) error {
+	query := `
+		UPDATE users SET
+			status = 'deactivated',
+			updated_at = $1,
+			updated_by = $2
+		WHERE id = $3 AND entity_id = $4
+	`
 
-	rows, err := r.db.Query(ctx, query, userID)
+	result, err := r.db.Exec(ctx, query, time.Now(), deactivatedBy, userID, entityID)
 	if err != nil {
-		return nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to get user roles")
-	}
-	defer rows.Close()
-
-	roleIDs := make([]string, 0)
-	for rows.Next() {
-		var roleID string
-		if err := rows.Scan(&roleID); err != nil {
-			return nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to scan role ID")
-		}
-		roleIDs = append(roleIDs, roleID)
+		return fmt.Errorf("failed to deactivate user: %w", err)
 	}
 
-	return roleIDs, nil
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("user not found")
+	}
+
+	return nil
 }

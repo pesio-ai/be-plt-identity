@@ -2,50 +2,48 @@ package repository
 
 import (
 	"context"
+	"fmt"
+	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/pesio-ai/be-go-common/database"
-	"github.com/pesio-ai/be-go-common/errors"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pesio-ai/be-go-common/logger"
 )
 
-// Role represents a role entity
-type Role struct {
-	ID          string
-	Name        string
-	Description string
-	Permissions []string
-	CreatedBy   *string
-	CreatedAt   string
-	UpdatedBy   *string
-	UpdatedAt   string
-}
-
-// RoleRepository handles role data operations
 type RoleRepository struct {
-	db *database.DB
+	db  *pgxpool.Pool
+	log *logger.Logger
 }
 
-// NewRoleRepository creates a new role repository
-func NewRoleRepository(db *database.DB) *RoleRepository {
-	return &RoleRepository{db: db}
+func NewRoleRepository(db *pgxpool.Pool, log *logger.Logger) *RoleRepository {
+	return &RoleRepository{
+		db:  db,
+		log: log,
+	}
 }
 
 // Create creates a new role
 func (r *RoleRepository) Create(ctx context.Context, role *Role) error {
+	role.ID = uuid.New().String()
+	role.CreatedAt = time.Now()
+	role.UpdatedAt = time.Now()
+
 	query := `
-		INSERT INTO roles (name, description, created_by)
-		VALUES ($1, $2, $3)
-		RETURNING id, created_at, updated_at
+		INSERT INTO roles (
+			id, entity_id, name, display_name, description,
+			role_type, is_active, created_at, updated_at, created_by
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+		)
 	`
 
-	err := r.db.QueryRow(ctx, query,
-		role.Name,
-		role.Description,
-		role.CreatedBy,
-	).Scan(&role.ID, &role.CreatedAt, &role.UpdatedAt)
+	_, err := r.db.Exec(ctx, query,
+		role.ID, role.EntityID, role.Name, role.DisplayName, role.Description,
+		role.RoleType, role.IsActive, role.CreatedAt, role.UpdatedAt, role.CreatedBy,
+	)
 
 	if err != nil {
-		return errors.Wrap(err, errors.ErrCodeInternal, "failed to create role")
+		return fmt.Errorf("failed to create role: %w", err)
 	}
 
 	return nil
@@ -56,160 +54,224 @@ func (r *RoleRepository) GetByID(ctx context.Context, id string) (*Role, error) 
 	role := &Role{}
 
 	query := `
-		SELECT id, name, description, created_by, created_at, updated_by, updated_at
+		SELECT id, entity_id, name, display_name, description,
+			   role_type, is_active, created_at, updated_at, created_by, updated_by
 		FROM roles
 		WHERE id = $1
 	`
 
 	err := r.db.QueryRow(ctx, query, id).Scan(
-		&role.ID,
-		&role.Name,
-		&role.Description,
-		&role.CreatedBy,
-		&role.CreatedAt,
-		&role.UpdatedBy,
-		&role.UpdatedAt,
+		&role.ID, &role.EntityID, &role.Name, &role.DisplayName, &role.Description,
+		&role.RoleType, &role.IsActive, &role.CreatedAt, &role.UpdatedAt,
+		&role.CreatedBy, &role.UpdatedBy,
 	)
 
-	if err == pgx.ErrNoRows {
-		return nil, errors.NotFound("role", id)
-	}
 	if err != nil {
-		return nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to get role")
-	}
-
-	// Load permissions
-	role.Permissions, err = r.getRolePermissions(ctx, id)
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get role: %w", err)
 	}
 
 	return role, nil
 }
 
-// List retrieves all roles with pagination
-func (r *RoleRepository) List(ctx context.Context, limit, offset int) ([]*Role, int64, error) {
-	// Get total count
-	var total int64
-	countQuery := `SELECT COUNT(*) FROM roles`
-	err := r.db.QueryRow(ctx, countQuery).Scan(&total)
-	if err != nil {
-		return nil, 0, errors.Wrap(err, errors.ErrCodeInternal, "failed to count roles")
-	}
-
-	// Get roles
+// List retrieves roles for an entity
+func (r *RoleRepository) List(ctx context.Context, entityID *string, activeOnly bool) ([]*Role, error) {
 	query := `
-		SELECT id, name, description, created_by, created_at, updated_by, updated_at
+		SELECT id, entity_id, name, display_name, description,
+			   role_type, is_active, created_at, updated_at, created_by, updated_by
 		FROM roles
-		ORDER BY name
-		LIMIT $1 OFFSET $2
+		WHERE (entity_id = $1 OR entity_id IS NULL)
 	`
 
-	rows, err := r.db.Query(ctx, query, limit, offset)
+	args := []interface{}{entityID}
+
+	if activeOnly {
+		query += " AND is_active = true"
+	}
+
+	query += " ORDER BY role_type, name"
+
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
-		return nil, 0, errors.Wrap(err, errors.ErrCodeInternal, "failed to list roles")
+		return nil, fmt.Errorf("failed to list roles: %w", err)
 	}
 	defer rows.Close()
 
-	roles := make([]*Role, 0)
+	var roles []*Role
 	for rows.Next() {
 		role := &Role{}
 		err := rows.Scan(
-			&role.ID,
-			&role.Name,
-			&role.Description,
-			&role.CreatedBy,
-			&role.CreatedAt,
-			&role.UpdatedBy,
-			&role.UpdatedAt,
+			&role.ID, &role.EntityID, &role.Name, &role.DisplayName, &role.Description,
+			&role.RoleType, &role.IsActive, &role.CreatedAt, &role.UpdatedAt,
+			&role.CreatedBy, &role.UpdatedBy,
 		)
 		if err != nil {
-			return nil, 0, errors.Wrap(err, errors.ErrCodeInternal, "failed to scan role")
+			return nil, fmt.Errorf("failed to scan role: %w", err)
 		}
-
-		// Load permissions
-		role.Permissions, _ = r.getRolePermissions(ctx, role.ID)
-
 		roles = append(roles, role)
 	}
 
-	return roles, total, nil
+	return roles, nil
 }
 
-// GetUserPermissions retrieves all permissions for a user
-func (r *RoleRepository) GetUserPermissions(ctx context.Context, userID string) ([]string, error) {
+// AssignToUser assigns a role to a user
+func (r *RoleRepository) AssignToUser(ctx context.Context, userID, roleID, entityID, assignedBy string) error {
 	query := `
-		SELECT DISTINCT p.code
-		FROM permissions p
-		INNER JOIN role_permissions rp ON p.id = rp.permission_id
-		INNER JOIN user_roles ur ON rp.role_id = ur.role_id
-		WHERE ur.user_id = $1
-		ORDER BY p.code
+		INSERT INTO user_roles (user_id, role_id, entity_id, assigned_at, assigned_by)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (user_id, role_id, entity_id) DO NOTHING
 	`
 
-	rows, err := r.db.Query(ctx, query, userID)
+	_, err := r.db.Exec(ctx, query, userID, roleID, entityID, time.Now(), assignedBy)
 	if err != nil {
-		return nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to get user permissions")
+		return fmt.Errorf("failed to assign role: %w", err)
+	}
+
+	return nil
+}
+
+// UnassignFromUser removes a role from a user
+func (r *RoleRepository) UnassignFromUser(ctx context.Context, userID, roleID, entityID string) error {
+	query := `
+		DELETE FROM user_roles
+		WHERE user_id = $1 AND role_id = $2 AND entity_id = $3
+	`
+
+	result, err := r.db.Exec(ctx, query, userID, roleID, entityID)
+	if err != nil {
+		return fmt.Errorf("failed to unassign role: %w", err)
+	}
+
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("role assignment not found")
+	}
+
+	return nil
+}
+
+// GetUserRoles retrieves roles assigned to a user for an entity
+func (r *RoleRepository) GetUserRoles(ctx context.Context, userID, entityID string) ([]*Role, error) {
+	query := `
+		SELECT r.id, r.entity_id, r.name, r.display_name, r.description,
+			   r.role_type, r.is_active, r.created_at, r.updated_at,
+			   r.created_by, r.updated_by
+		FROM roles r
+		INNER JOIN user_roles ur ON r.id = ur.role_id
+		WHERE ur.user_id = $1 AND ur.entity_id = $2 AND r.is_active = true
+		ORDER BY r.role_type, r.name
+	`
+
+	rows, err := r.db.Query(ctx, query, userID, entityID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user roles: %w", err)
 	}
 	defer rows.Close()
 
-	permissions := make([]string, 0)
+	var roles []*Role
 	for rows.Next() {
-		var permission string
-		if err := rows.Scan(&permission); err != nil {
-			return nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to scan permission")
+		role := &Role{}
+		err := rows.Scan(
+			&role.ID, &role.EntityID, &role.Name, &role.DisplayName, &role.Description,
+			&role.RoleType, &role.IsActive, &role.CreatedAt, &role.UpdatedAt,
+			&role.CreatedBy, &role.UpdatedBy,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan role: %w", err)
 		}
-		permissions = append(permissions, permission)
+		roles = append(roles, role)
+	}
+
+	return roles, nil
+}
+
+// GetRolePermissions retrieves permissions for a role
+func (r *RoleRepository) GetRolePermissions(ctx context.Context, roleID string) ([]*Permission, error) {
+	query := `
+		SELECT p.id, p.module, p.resource, p.action, p.name, p.description, p.is_sensitive, p.created_at
+		FROM permissions p
+		INNER JOIN role_permissions rp ON p.id = rp.permission_id
+		WHERE rp.role_id = $1
+		ORDER BY p.module, p.resource, p.action
+	`
+
+	rows, err := r.db.Query(ctx, query, roleID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get role permissions: %w", err)
+	}
+	defer rows.Close()
+
+	var permissions []*Permission
+	for rows.Next() {
+		perm := &Permission{}
+		err := rows.Scan(
+			&perm.ID, &perm.Module, &perm.Resource, &perm.Action,
+			&perm.Name, &perm.Description, &perm.IsSensitive, &perm.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan permission: %w", err)
+		}
+		permissions = append(permissions, perm)
 	}
 
 	return permissions, nil
 }
 
-// CheckPermission checks if a user has a specific permission
-func (r *RoleRepository) CheckPermission(ctx context.Context, userID, permission string) (bool, error) {
+// GetUserPermissions retrieves all permissions for a user (aggregated from all their roles)
+func (r *RoleRepository) GetUserPermissions(ctx context.Context, userID, entityID string) ([]*Permission, error) {
+	query := `
+		SELECT DISTINCT p.id, p.module, p.resource, p.action, p.name, p.description, p.is_sensitive, p.created_at
+		FROM permissions p
+		INNER JOIN role_permissions rp ON p.id = rp.permission_id
+		INNER JOIN user_roles ur ON rp.role_id = ur.role_id
+		INNER JOIN roles r ON ur.role_id = r.id
+		WHERE ur.user_id = $1 AND ur.entity_id = $2 AND r.is_active = true
+		ORDER BY p.module, p.resource, p.action
+	`
+
+	rows, err := r.db.Query(ctx, query, userID, entityID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user permissions: %w", err)
+	}
+	defer rows.Close()
+
+	var permissions []*Permission
+	for rows.Next() {
+		perm := &Permission{}
+		err := rows.Scan(
+			&perm.ID, &perm.Module, &perm.Resource, &perm.Action,
+			&perm.Name, &perm.Description, &perm.IsSensitive, &perm.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan permission: %w", err)
+		}
+		permissions = append(permissions, perm)
+	}
+
+	return permissions, nil
+}
+
+// CheckUserPermission checks if a user has a specific permission
+func (r *RoleRepository) CheckUserPermission(ctx context.Context, userID, entityID, module, resource, action string) (bool, error) {
 	query := `
 		SELECT EXISTS(
 			SELECT 1
 			FROM permissions p
 			INNER JOIN role_permissions rp ON p.id = rp.permission_id
 			INNER JOIN user_roles ur ON rp.role_id = ur.role_id
-			WHERE ur.user_id = $1 AND p.code = $2
+			INNER JOIN roles r ON ur.role_id = r.id
+			WHERE ur.user_id = $1 
+			  AND ur.entity_id = $2
+			  AND r.is_active = true
+			  AND p.module = $3
+			  AND p.resource = $4
+			  AND p.action = $5
 		)
 	`
 
 	var hasPermission bool
-	err := r.db.QueryRow(ctx, query, userID, permission).Scan(&hasPermission)
+	err := r.db.QueryRow(ctx, query, userID, entityID, module, resource, action).Scan(&hasPermission)
 	if err != nil {
-		return false, errors.Wrap(err, errors.ErrCodeInternal, "failed to check permission")
+		return false, fmt.Errorf("failed to check permission: %w", err)
 	}
 
 	return hasPermission, nil
-}
-
-// getRolePermissions retrieves permission codes for a role
-func (r *RoleRepository) getRolePermissions(ctx context.Context, roleID string) ([]string, error) {
-	query := `
-		SELECT p.code
-		FROM permissions p
-		INNER JOIN role_permissions rp ON p.id = rp.permission_id
-		WHERE rp.role_id = $1
-		ORDER BY p.code
-	`
-
-	rows, err := r.db.Query(ctx, query, roleID)
-	if err != nil {
-		return nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to get role permissions")
-	}
-	defer rows.Close()
-
-	permissions := make([]string, 0)
-	for rows.Next() {
-		var permission string
-		if err := rows.Scan(&permission); err != nil {
-			return nil, errors.Wrap(err, errors.ErrCodeInternal, "failed to scan permission")
-		}
-		permissions = append(permissions, permission)
-	}
-
-	return permissions, nil
 }

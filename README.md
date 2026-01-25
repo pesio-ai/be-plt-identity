@@ -78,14 +78,38 @@ psql -h localhost -U pesio -d plt_identity_db -f migrations/001_initial_schema.s
 go mod download
 ```
 
-5. **Run the service**:
+5. **Bootstrap test data** (development only):
+```bash
+cd scripts
+go run bootstrap.go
+```
+
+This creates 3 test users:
+- **Admin**: `admin@test.com` / `Admin123!` (system_admin role)
+- **Accountant**: `accountant@test.com` / `Accountant123!` (accountant role)
+- **AP Clerk**: `clerk@test.com` / `Clerk123!` (ap_clerk role)
+
+6. **Run the service**:
 ```bash
 go run cmd/server/main.go
 ```
 
 The service will start on:
-- HTTP: http://localhost:8080
-- gRPC: localhost:9090
+- gRPC: localhost:9081
+
+### Test the Service
+
+```bash
+# Login as admin
+grpcurl -plaintext -d '{
+  "email": "admin@test.com",
+  "password": "Admin123!",
+  "entity_domain": "b912b3e0-523e-46a2-9a90-587bc6c95cfa",
+  "device_type": "web",
+  "device_name": "test-browser",
+  "ip_address": "127.0.0.1"
+}' localhost:9081 platform.IdentityService/Login
+```
 
 ## API Endpoints
 
@@ -179,6 +203,20 @@ go run cmd/server/main.go
 ```
 
 ### Run Tests
+
+**Unit Tests** (password and JWT utilities):
+```bash
+go test ./pkg/password -v
+go test ./pkg/jwt -v
+```
+
+**Integration Tests** (full authentication flows):
+```bash
+cd test
+go test -v
+```
+
+**All Tests**:
 ```bash
 go test ./...
 ```
@@ -206,19 +244,22 @@ docker run -p 8080:8080 -p 9090:9090 \
 
 ## Security
 
-- Passwords are hashed using bcrypt
-- JWT tokens signed with HS256
-- Refresh tokens hashed with SHA256 before storage
-- Failed login attempts are logged
-- Token expiration enforced
+- **Password Hashing**: Argon2id with 64MB memory, 3 iterations (OWASP recommended)
+- **JWT Tokens**: RS256 asymmetric signing (2048-bit RSA keys)
+- **Access Tokens**: 15-minute expiration
+- **Refresh Tokens**: 30-day expiration, single-use, hashed before storage
+- **Session Tracking**: Full device and IP tracking
+- **Audit Logging**: All authentication events logged
 
 **Production Checklist**:
-- [ ] Change `jwtSecret` in `internal/service/identity_service.go` (use environment variable)
+- [ ] Set `JWT_PRIVATE_KEY` and `JWT_PUBLIC_KEY` environment variables (load from secure storage)
 - [ ] Enable HTTPS/TLS
-- [ ] Configure rate limiting
+- [ ] Configure rate limiting (10 failed logins per IP per 15 minutes)
 - [ ] Enable database SSL mode
 - [ ] Set strong database passwords
 - [ ] Review CORS settings
+- [ ] Rotate JWT keys periodically
+- [ ] Monitor auth_audit_log for suspicious activity
 
 ## Dependencies
 
