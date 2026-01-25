@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pesio-ai/be-go-common/logger"
+	"github.com/pesio-ai/be-lib-common/logger"
 	"github.com/pesio-ai/be-identity-service/internal/repository"
 	jwtpkg "github.com/pesio-ai/be-identity-service/pkg/jwt"
 	"github.com/pesio-ai/be-identity-service/pkg/password"

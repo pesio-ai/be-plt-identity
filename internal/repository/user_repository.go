@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/pesio-ai/be-go-common/logger"
+	"github.com/pesio-ai/be-lib-common/logger"
 )
 
 type UserRepository struct {

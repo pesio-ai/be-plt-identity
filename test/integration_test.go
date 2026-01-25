@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/pesio-ai/be-go-common/logger"
-	pb "github.com/pesio-ai/be-go-proto/gen/go/platform"
+	"github.com/pesio-ai/be-lib-common/logger"
+	pb "github.com/pesio-ai/be-lib-proto/gen/go/platform"
 	"github.com/pesio-ai/be-identity-service/internal/handler"
 	"github.com/pesio-ai/be-identity-service/internal/repository"
 	"github.com/pesio-ai/be-identity-service/internal/service"

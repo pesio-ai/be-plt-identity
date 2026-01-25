@@ -6,8 +6,8 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.8.0
-	github.com/pesio-ai/be-go-proto v0.0.0
 	github.com/pesio-ai/be-lib-common v0.0.0
+	github.com/pesio-ai/be-lib-proto v0.0.0
 	golang.org/x/crypto v0.44.0
 	google.golang.org/grpc v1.78.0
 	google.golang.org/protobuf v1.36.11
@@ -28,6 +28,6 @@ require (
 )
 
 replace (
-	github.com/pesio-ai/be-go-proto => ../be-go-proto
 	github.com/pesio-ai/be-lib-common => ../be-lib-common
+	github.com/pesio-ai/be-lib-proto => ../be-lib-proto
 )

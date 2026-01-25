@@ -3,9 +3,9 @@ package handler
 import (
 	"context"
 
-	"github.com/pesio-ai/be-go-common/logger"
-	commonpb "github.com/pesio-ai/be-go-proto/gen/go/common"
-	pb "github.com/pesio-ai/be-go-proto/gen/go/platform"
+	"github.com/pesio-ai/be-lib-common/logger"
+	commonpb "github.com/pesio-ai/be-lib-proto/gen/go/common"
+	pb "github.com/pesio-ai/be-lib-proto/gen/go/platform"
 	"github.com/pesio-ai/be-identity-service/internal/repository"
 	"github.com/pesio-ai/be-identity-service/internal/service"
 	"google.golang.org/grpc/codes"
