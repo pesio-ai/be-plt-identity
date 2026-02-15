@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pesio-ai/be-lib-common/health"
 	"github.com/pesio-ai/be-lib-common/logger"
 	pb "github.com/pesio-ai/be-lib-proto/gen/go/platform"
 	"github.com/pesio-ai/be-plt-identity/internal/handler"
@@ -28,8 +30,19 @@ func main() {
 	})
 
 	// Get configuration from environment
-	dbURL := getEnv("DATABASE_URL", "postgres://pesio:dev_password_change_me@localhost:5432/plt_identity_db?sslmode=disable")
-	grpcPort := getEnv("GRPC_PORT", "9081")
+	dbHost := getEnv("DB_HOST", "localhost")
+	dbPort := getEnv("DB_PORT", "5432")
+	dbUser := getEnv("DB_USER", "pesio")
+	dbPassword := getEnv("DB_PASSWORD", "dev_password_change_me")
+	dbName := getEnv("DB_NAME", "plt_identity_db")
+	dbSSLMode := getEnv("DB_SSL_MODE", "disable")
+
+	// Construct database URL
+	dbURL := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+		dbUser, dbPassword, dbHost, dbPort, dbName, dbSSLMode)
+
+	httpPort := getEnv("HTTP_PORT", "8080")
+	grpcPort := getEnv("GRPC_PORT", "9080")
 	
 	// JWT configuration
 	// TODO: In production, use shorter duration (15 * time.Minute) and implement token refresh
@@ -83,6 +96,27 @@ func main() {
 	// Initialize handler
 	grpcHandler := handler.NewGRPCHandler(authService, userService, roleService, log)
 
+	// Setup HTTP server with health endpoint
+	mux := http.NewServeMux()
+	healthHandler := health.NewHandler("be-plt-identity", "1.0.0")
+	mux.Handle("/health", healthHandler)
+
+	httpServer := &http.Server{
+		Addr:         fmt.Sprintf(":%s", httpPort),
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// Start HTTP server
+	go func() {
+		log.Info().Str("port", httpPort).Msg("Starting HTTP server")
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error().Err(err).Msg("HTTP server failed")
+		}
+	}()
+
 	// Setup gRPC server
 	grpcServer := grpc.NewServer()
 	pb.RegisterIdentityServiceServer(grpcServer, grpcHandler)
@@ -108,6 +142,13 @@ func main() {
 	<-sigChan
 
 	log.Info().Msg("Shutting down gracefully...")
+
+	// Shutdown HTTP server
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Error().Err(err).Msg("HTTP server shutdown failed")
+	}
 
 	// Shutdown gRPC server
 	grpcServer.GracefulStop()
