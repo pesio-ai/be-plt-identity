@@ -1,33 +1,48 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
-WORKDIR /app
+# Install build dependencies
+RUN apk add --no-cache git
 
-# Copy go mod files
-COPY go.mod go.sum ./
+# Set working directory
+WORKDIR /build
+
+# Copy shared libraries first
+COPY be-lib-common/ ./be-lib-common/
+COPY be-lib-proto/ ./be-lib-proto/
+
+# Copy service files
+COPY be-plt-identity/ ./be-plt-identity/
+
+# Build from service directory
+WORKDIR /build/be-plt-identity
+
+# Download dependencies
 RUN go mod download
 
-# Copy source code
-COPY . .
-
-# Build binary
+# Build the application
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o main ./cmd/server
 
-# Final stage
+# Runtime stage
 FROM alpine:latest
 
-RUN apk --no-cache add ca-certificates
+# Install ca-certificates
+RUN apk --no-cache add ca-certificates curl
 
 WORKDIR /root/
 
-# Copy binary from builder
-COPY --from=builder /app/main .
+# Copy the binary from builder
+COPY --from=builder /build/be-plt-identity/main .
 
 # Copy migrations
-COPY migrations ./migrations
+COPY --from=builder /build/be-plt-identity/migrations ./migrations
 
-# Expose ports
-EXPOSE 8080 9090
+# Expose ports (gRPC only)
+EXPOSE 9080
 
-# Run
+# Health check (gRPC doesn't have simple HTTP health endpoint)
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
+  CMD sh -c "nc -z localhost 9080 || exit 1"
+
+# Run the server
 CMD ["./main"]
