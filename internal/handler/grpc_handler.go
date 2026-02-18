@@ -365,6 +365,42 @@ func (h *GRPCHandler) CheckPermission(ctx context.Context, req *pb.CheckPermissi
 	}, nil
 }
 
+// ListUsersByRole returns user IDs that hold a given role for an entity
+func (h *GRPCHandler) ListUsersByRole(ctx context.Context, req *pb.ListUsersByRoleRequest) (*pb.ListUsersByRoleResponse, error) {
+	h.log.Info().
+		Str("entity_id", req.EntityId).
+		Str("role_name", req.RoleName).
+		Msg("gRPC ListUsersByRole request")
+
+	userIDs, err := h.roleService.ListUsersByRole(ctx, req.EntityId, req.RoleName)
+	if err != nil {
+		h.log.Error().Err(err).Msg("ListUsersByRole failed")
+		return nil, toGRPCError(err)
+	}
+
+	return &pb.ListUsersByRoleResponse{
+		UserIds: userIDs,
+	}, nil
+}
+
+// GetUserRoles returns the role names a user holds for an entity
+func (h *GRPCHandler) GetUserRoles(ctx context.Context, req *pb.GetUserRolesRequest) (*pb.GetUserRolesResponse, error) {
+	h.log.Info().
+		Str("user_id", req.UserId).
+		Str("entity_id", req.EntityId).
+		Msg("gRPC GetUserRoles request")
+
+	roleNames, err := h.roleService.GetUserRoleNames(ctx, req.EntityId, req.UserId)
+	if err != nil {
+		h.log.Error().Err(err).Msg("GetUserRoles failed")
+		return nil, toGRPCError(err)
+	}
+
+	return &pb.GetUserRolesResponse{
+		RoleNames: roleNames,
+	}, nil
+}
+
 // Helper functions
 
 func userToProto(user *repository.User) *pb.User {

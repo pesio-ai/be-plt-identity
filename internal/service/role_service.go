@@ -95,6 +95,28 @@ func (s *RoleService) AssignRole(ctx context.Context, userID, roleID, entityID, 
 	return nil
 }
 
+// ListUsersByRole returns user IDs that hold the given role name for an entity
+func (s *RoleService) ListUsersByRole(ctx context.Context, entityID, roleName string) ([]string, error) {
+	userIDs, err := s.roleRepo.GetUserIDsByRoleName(ctx, entityID, roleName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list users by role: %w", err)
+	}
+	return userIDs, nil
+}
+
+// GetUserRoleNames returns the role names a user holds for an entity
+func (s *RoleService) GetUserRoleNames(ctx context.Context, entityID, userID string) ([]string, error) {
+	roles, err := s.roleRepo.GetUserRoles(ctx, userID, entityID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user role names: %w", err)
+	}
+	names := make([]string, len(roles))
+	for i, r := range roles {
+		names[i] = r.Name
+	}
+	return names, nil
+}
+
 // UnassignRole removes a role from a user
 func (s *RoleService) UnassignRole(ctx context.Context, userID, roleID, entityID string) error {
 	s.log.Info().

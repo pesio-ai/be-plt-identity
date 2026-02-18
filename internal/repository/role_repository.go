@@ -183,6 +183,33 @@ func (r *RoleRepository) GetUserRoles(ctx context.Context, userID, entityID stri
 	return roles, nil
 }
 
+// GetUserIDsByRoleName returns user IDs assigned to a role by name for an entity
+func (r *RoleRepository) GetUserIDsByRoleName(ctx context.Context, entityID, roleName string) ([]string, error) {
+	query := `
+		SELECT ur.user_id
+		FROM user_roles ur
+		INNER JOIN roles r ON r.id = ur.role_id
+		WHERE r.entity_id = $1 AND r.name = $2 AND r.is_active = true
+	`
+
+	rows, err := r.db.Query(ctx, query, entityID, roleName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get users by role name: %w", err)
+	}
+	defer rows.Close()
+
+	var userIDs []string
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			return nil, fmt.Errorf("failed to scan user id: %w", err)
+		}
+		userIDs = append(userIDs, userID)
+	}
+
+	return userIDs, nil
+}
+
 // GetRolePermissions retrieves permissions for a role
 func (r *RoleRepository) GetRolePermissions(ctx context.Context, roleID string) ([]*Permission, error) {
 	query := `
